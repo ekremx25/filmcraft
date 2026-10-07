@@ -42,8 +42,8 @@ echo "==> FilmCraft $VERSION for Linux $ARCH ($FORMATS)"
 if [ "$SKIP_BUILD" = 0 ]; then
   (cd "$ROOT" && cargo build --release --locked -p filmcraft -p filmcraft-cli)
 fi
-BIN="$CARGO_TARGET_DIR/release"
-WORK="$CARGO_TARGET_DIR/linux-package"
+BIN="${FILMCRAFT_PACKAGE_BIN_DIR:-$CARGO_TARGET_DIR/release}"
+WORK="${FILMCRAFT_PACKAGE_WORK:-$CARGO_TARGET_DIR/linux-package}"
 STAGE="$WORK/root"
 rm -rf "$WORK"
 
@@ -94,7 +94,7 @@ fi
 if has appimage; then
   APPDIR="$WORK/FilmCraft.AppDir"
   cp -R "$STAGE" "$APPDIR"
-  mv "$APPDIR/usr/share/doc" "$WORK/doc-unused"
+  # Keep licences/notices in the portable distribution too.
   ln -s usr/bin/filmcraft "$APPDIR/AppRun"
   cp "$HERE/$APP_ID.desktop" "$APPDIR/$APP_ID.desktop"
   cp "$ROOT/assets/app-icon/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/$APP_ID.png"

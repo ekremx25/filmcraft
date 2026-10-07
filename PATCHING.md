@@ -267,3 +267,85 @@ export/application, damaged metadata, and detached/wrong-repository rejection.
 Cargo is replaced only in those test fixtures to test orchestration without
 rebuilding FilmCraft repeatedly. These tests do not replace the real Rust gates
 or hardware export tests. They never fetch or rebase your working installation.
+
+## Linux x86_64 AppImage
+
+The updater now packages an AppImage **after** all gates and the desktop release
+build pass. It calls `scripts/build-appimage.sh`, a frontend to the existing
+`packaging/linux/package.sh --skip-build --formats appimage`. Package creation
+failure fails the update; the rebased branch and backup are retained.
+
+```bash
+./scripts/build-appimage.sh
+# Or reuse the desktop executable that was just built (CLI is checked/built by Cargo):
+./scripts/build-appimage.sh --binary "$PWD/target/release/filmcraft"
+./dist/FilmCraft-0.2.1-VAAPI-linux-x86_64.AppImage
+```
+
+The version comes from `[workspace.package].version`, not the example above.
+Output: `dist/FilmCraft-<version>-VAAPI-linux-x86_64.AppImage`, with a `.sha256`
+sidecar. The official packager supplies `ai.storyteller.filmcraft`, the desktop
+entry, categories, AppStream and MIME metadata, and `assets/app-icon/hicolor`
+icons. AppRun directly links to `usr/bin/filmcraft`; application arguments pass
+through unchanged. Both FilmCraft and its CLI are included. Licence/attribution
+notices are retained in the AppDir. Packaging uses a fresh temporary staging
+area and replaces the old output only after its `--version` launch test passes.
+
+No shared libraries are bundled. The complete AppDir is audited to reject them
+and graphics-driver directories. In particular there is no Mesa, libva,
+`*_drv_video.so`, Vulkan ICD, libdrm, libGL/EGL, or GPU kernel library in the
+payload. No loader/driver environment variables are forced. `/dev/dri` is used
+with the invoking user's normal permissions; AppImage is not a sandbox and the
+launcher does not add device isolation or permission changes.
+
+This is an install-free package, **not an all-distributions runtime**. Host
+ALSA, glibc/libgcc, the applicable X11/Wayland libraries, Vulkan/OpenGL loader,
+libva and the GPU driver must be installed. The build host's ABI matters: a
+binary built on a recent distribution can fail on an older glibc. For broad
+compatibility, build on the project's Ubuntu 22.04 release baseline instead of
+copying glibc/Mesa out of a newer workstation. Test each target distribution.
+Optional craft-fonts remain a build input exactly as in the official release.
+
+The official packager uses `APPIMAGETOOL` if provided, then PATH, then downloads
+AppImage's official continuous tool to the Cargo target directory. Building
+therefore needs network access on first use; the tool may also fetch its runtime.
+For controlled/offline builds, supply a preprovisioned tool/runtime as supported
+by appimagetool. Packaging-tool versions are independent of FilmCraft's version.
+Compression runs with the tool's default settings; Rust jobs default to one.
+If FUSE is unavailable, use the official runtime's extraction mode:
+
+```bash
+APPIMAGE_EXTRACT_AND_RUN=1 ./dist/FilmCraft-0.2.1-VAAPI-linux-x86_64.AppImage
+```
+
+### Testing real VAAPI from the package
+
+A `--version` test does not establish that a window opens or that VAAPI works.
+Those statuses are explicitly reported as not run by the normal packaging step.
+On an AMD machine with an active desktop, install `amdgpu_top` and the optional
+ffmpeg/ffprobe **test oracles**, then run:
+
+```bash
+python3 scripts/test-appimage-vaapi.py dist/FilmCraft-0.2.1-VAAPI-linux-x86_64.AppImage
+```
+
+The test launches the actual AppImage using a separate profile and loopback
+control port, renders 15 seconds of the procedural demo at 1920×1080/30fps in
+Hardware mode, and requires a VAAPI encoder log plus open render-node access.
+It captures the process's loaded host graphics libraries and its own PID's
+amdgpu_top VCN usage, verifies all 450 H.264 frames using ffprobe/ffmpeg, takes a
+screenshot, and closes only its own test application. On unified AMD video
+engines the metric is `VCN_Unified`; with procedural source frames and no video
+decoder in this test, the observed VCN work is hardware encoding.
+
+Evidence, logs, the test export, screenshot, and `report.json` (path, size,
+version, SHA256, launch/VAAPI/VCN results) are retained under
+`target/appimage-vaapi-test-<timestamp>/`. Hardware testing is deliberately
+explicit so routine updates also work without a logged-in graphical session or
+on non-AMD machines. A failure exits nonzero and keeps the evidence for diagnosis.
+
+The initial local VAAPI AppImage was tested on CachyOS with an RX 9070 XT:
+normal FUSE GUI launch, host libva/Mesa loading and renderD128 access passed;
+450 H.264 frames decoded successfully and the application's VCN Unified usage
+peaked at 27%. ELF symbol inspection requires **glibc 2.44** for this workstation
+build. These results describe this machine/package, not untested older distros.
