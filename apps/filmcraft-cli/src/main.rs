@@ -29,7 +29,7 @@ SUBCOMMANDS
   export <out> [--preset name] [--format f] [--range r] [--start s --end s] [--settings json]
                                 export the active sequence and wait for it to finish: with an
                                 export preset (`export --list-presets`; built-in or the user's), or
-                                a format (h264|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
+                                a format (h264|hevc|av1|prores|dnxhr|mjpeg|mxf-op1a|mxf-opatom|png|tiff|bmp|gif|wav|aiff, guessed
                                 from the extension); --range entire|inOut|workArea, or a custom
                                 range in seconds; --settings is ExportSettings JSON merged over the
                                 preset; --queue adds to the export queue and runs it instead

@@ -309,3 +309,37 @@ fn export_button_and_quick_export_popup() {
     d.click("quickExport.close");
     assert!(!d.app().ui.export.quick_open);
 }
+
+#[test]
+fn hardware_selection_controls_are_automatable() {
+    use filmcraft_engine::export::*;
+    fn mock(_: Format, _: u32, _: u32, _: filmcraft_engine::time::FrameRate, _: &ExportSettings) -> Option<Result<Box<dyn VideoEncoder>>> {
+        None
+    }
+    hardware::register(
+        mock,
+        vec![hardware::Capability {
+            format: Format::H264,
+            device: "Test render node".into(),
+            profile: Some(H264Profile::High),
+            cbr: true,
+            vbr: true,
+            cqp: true,
+        }],
+    );
+    let mut d = Driver::new("hardware");
+    d.ok("ui.set", json!({"mode":"export"}));
+    d.frames(4);
+    assert!(d.has("export.video.encoding"));
+    d.app().ui.export.settings.video_encoding = VideoEncoding::Hardware;
+    d.frames(4);
+    assert!(d.has("export.video.hardwareRateControl"));
+    d.app().ui.export.settings.hardware_qp = Some(25);
+    d.frames(4);
+    assert!(d.has("export.video.hardwareQp"));
+    d.snapshot("export-hardware");
+    d.app().ui.export.settings.video_encoding = VideoEncoding::Software;
+    d.frames(4);
+    assert!(d.has("export.video.bitrateMode"));
+    assert!(!d.has("export.video.hardwareQp"));
+}

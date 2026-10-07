@@ -1,9 +1,10 @@
-//! OS media integration (layer L5): hardware video decoding through the operating system's codecs.
+//! OS media integration (layer L5): hardware video decoding and encoding through OS media APIs.
 //!
 //! [`register`] puts the platform's hardware decoder factory in front of FilmCraft's own decoders
 //! (`filmcraft_codecs::register_video_decoder`). Today that is VideoToolbox on macOS for H.264
-//! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2; on other systems
-//! registration does nothing and reports [`Availability::Unavailable`].
+//! (`avcC`) and HEVC (`hvcC`) streams, 8- and 10-bit, 4:2:0 and 4:2:2. Linux also registers the
+//! `vaapi` H.264/HEVC/AV1 export factory. The returned [`Availability`] describes decoding;
+//! export capabilities are available through `filmcraft_export::hardware::capabilities`.
 //!
 //! Hardware decoding never makes a file undecodable:
 //!
@@ -23,6 +24,9 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable))]
 
 pub mod hybrid;
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+pub mod vaapi;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 pub mod videotoolbox;
@@ -42,6 +46,8 @@ pub enum Availability {
 /// harmless). Streams they do not take, and every stream while hardware decoding is Off, keep
 /// using FilmCraft's own decoders.
 pub fn register() -> Availability {
+    #[cfg(target_os = "linux")]
+    vaapi::register();
     #[cfg(target_os = "macos")]
     {
         filmcraft_codecs::register_video_decoder(videotoolbox_factory);

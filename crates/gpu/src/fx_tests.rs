@@ -190,6 +190,20 @@ fn cases() -> Vec<(&'static str, Vec<(&'static str, ParamValue)>, bool)> {
     ]
 }
 
+/// Odd dimensions expose sub-texel errors from interpolating the source quad's coordinates.
+#[test]
+fn effect_source_preserves_texel_centers_without_resampling() {
+    let Some((dev, q)) = device() else { return };
+    let mut c = GpuCompositor::new(&dev, &q);
+    let (w, h) = (67, 41);
+    let px = picture(w, h);
+    let frame = VideoFrame::rgba_f32(w, h, px.clone());
+    let fx = LayerFx { size: (w, h), decimation: 1, ops: vec![] };
+    let (_, _, gpu) = c.effect_image(&frame, &fx).unwrap();
+    let changed = px.iter().zip(&gpu).filter(|(a, b)| a != b).count();
+    assert_eq!(changed, 0, "a 1:1 source draw must preserve half-float-representable texels exactly");
+}
+
 /// Every effect case on the GPU against its CPU reference, on the working image read back as f32.
 #[test]
 fn gpu_effects_match_cpu_exactly() {

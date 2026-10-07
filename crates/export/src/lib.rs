@@ -16,6 +16,7 @@
 use std::io::Write;
 
 mod audio_out;
+pub mod hardware;
 mod job;
 mod mxf_out;
 mod pcm;
@@ -23,6 +24,7 @@ mod pipeline;
 pub mod presets;
 pub mod settings;
 pub use audio_out::LoudnessReport;
+pub use hardware::VideoEncoding;
 pub use job::{Exporter, Step, stepped};
 pub use mxf_out::opatom_audio_paths;
 pub use pcm::{image_sequence_path, write_aiff, write_wav};
@@ -61,6 +63,12 @@ pub enum Format {
     #[default]
     #[serde(rename = "h264", alias = "H264")]
     H264,
+    /// HEVC Main, provided by a registered platform encoder.
+    #[serde(rename = "hevc", alias = "Hevc")]
+    Hevc,
+    /// AV1 Main, provided by a registered platform encoder.
+    #[serde(rename = "av1", alias = "Av1")]
+    Av1,
     /// QuickTime, Apple ProRes 422 (HQ unless the settings pick another flavour) + PCM.
     #[serde(rename = "prores", alias = "ProRes")]
     ProRes,
@@ -102,6 +110,8 @@ impl Format {
     pub fn from_name(s: &str) -> Option<Format> {
         Some(match s.to_ascii_lowercase().replace([' ', '-', '_', '.'], "").as_str() {
             "h264" | "mp4" | "avc" | "m4v" => Format::H264,
+            "hevc" | "h265" => Format::Hevc,
+            "av1" => Format::Av1,
             "prores" | "mov" | "appleprores" => Format::ProRes,
             "dnxhr" | "dnxhd" | "dnx" | "avid" | "aviddnxhr" | "aviddnxhd" | "vc3" => Format::DnxHr,
             "apv" | "apv1" => Format::Apv,
@@ -121,6 +131,8 @@ impl Format {
     pub fn id(self) -> &'static str {
         match self {
             Format::H264 => "h264",
+            Format::Hevc => "hevc",
+            Format::Av1 => "av1",
             Format::ProRes => "prores",
             Format::DnxHr => "dnxhr",
             Format::Apv => "apv",
@@ -137,7 +149,7 @@ impl Format {
     }
     pub fn extension(self) -> &'static str {
         match self {
-            Format::H264 => "mp4",
+            Format::H264 | Format::Hevc | Format::Av1 => "mp4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "mov",
             Format::PngSequence => "png",
             Format::TiffSequence => "tif",
@@ -151,6 +163,8 @@ impl Format {
     pub fn label(self) -> &'static str {
         match self {
             Format::H264 => "H.264",
+            Format::Hevc => "HEVC (H.265)",
+            Format::Av1 => "AV1",
             Format::ProRes => "Apple ProRes",
             Format::DnxHr => "Avid DNxHR",
             Format::Apv => "APV",
@@ -169,8 +183,10 @@ impl Format {
     pub fn is_mxf(self) -> bool {
         matches!(self, Format::MxfOp1a | Format::MxfOpAtom)
     }
-    pub const ALL: [Format; 13] = [
+    pub const ALL: [Format; 15] = [
         Format::H264,
+        Format::Hevc,
+        Format::Av1,
         Format::ProRes,
         Format::DnxHr,
         Format::Apv,
@@ -200,6 +216,9 @@ pub enum H264Pass {
 #[serde(default, rename_all = "camelCase")]
 pub struct ExportSettings {
     pub format: Format,
+    pub video_encoding: VideoEncoding,
+    /// VAAPI constant quantizer (H.264/HEVC 1..51, AV1 1..255). None uses bitrate control.
+    pub hardware_qp: Option<u8>,
     pub path: String,
     /// Timeline range (default: In/Out if set, else the whole sequence).
     pub range: Option<TimeRange>,
@@ -408,6 +427,8 @@ impl Default for ExportSettings {
     fn default() -> Self {
         Self {
             format: Format::H264,
+            video_encoding: VideoEncoding::Auto,
+            hardware_qp: None,
             path: String::new(),
             range: None,
             scale: 1.0,
@@ -449,6 +470,12 @@ impl Default for ExportSettings {
 impl ExportSettings {
     /// Reject settings the encoders cannot honour.
     pub fn validate(&self) -> Result<()> {
+        if self.video_encoding == VideoEncoding::Hardware && !matches!(self.video_format(), Format::H264 | Format::Hevc | Format::Av1) {
+            return Err(ExportError::Unsupported(format!("Hardware Encoding is not available for {}; select Auto or Software", self.format.label())));
+        }
+        if matches!(self.format, Format::Hevc | Format::Av1) && self.bitrate_mode == BitrateMode::Vbr2Pass {
+            return Err(ExportError::Unsupported("HEVC/AV1 hardware export supports one-pass rate control only".into()));
+        }
         if self.field_order != FieldOrder::Progressive && self.has_video() {
             return Err(ExportError::Unsupported(format!("{} field order: FilmCraft's encoders write progressive frames", self.field_order.label())));
         }
@@ -554,7 +581,10 @@ fn audio_factories() -> &'static RwLock<Vec<AudioEncoderFactory>> {
 }
 
 pub fn register_encoder(f: EncoderFactory) {
-    video_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
+    let mut factories = video_factories().write().unwrap_or_else(|e| e.into_inner());
+    if !factories.iter().any(|old| std::ptr::fn_addr_eq(*old, f)) {
+        factories.insert(0, f);
+    }
 }
 pub fn register_audio_encoder(f: AudioEncoderFactory) {
     audio_factories().write().unwrap_or_else(|e| e.into_inner()).insert(0, f);
@@ -563,7 +593,10 @@ pub fn register_audio_encoder(f: AudioEncoderFactory) {
 /// Whether a format can currently be exported. Every [`Format`] has a built-in encoder; this stays
 /// as the hook for formats whose encoders are registered at runtime.
 pub fn available(format: Format) -> bool {
-    Format::ALL.contains(&format)
+    match format {
+        Format::Hevc | Format::Av1 => hardware::capabilities().iter().any(|c| c.format == format),
+        _ => true,
+    }
 }
 
 struct MjpegEncoder {
@@ -1225,7 +1258,7 @@ pub fn export(project: &Arc<Project>, seq: ItemId, settings: &ExportSettings, so
             }
             (total, count)
         }
-        Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
+        Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom => {
             // Handled by the stepped exporter above; reaching here would be a dispatch bug.
             return Err(ExportError::Unsupported(format!("{:?} must run as a stepped export", settings.format)));
         }

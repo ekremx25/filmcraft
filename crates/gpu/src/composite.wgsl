@@ -156,6 +156,16 @@ fn hash2(x: u32, y: u32) -> f32 {
     return f32(h.y >> 8u) / 16777216.0;
 }
 
+// Effect sources are only scaled by an integer decimation factor, with no translation or
+// rotation. Derive source centers from fragment positions instead of interpolated varyings:
+// tiny interpolation errors otherwise mix adjacent texels even in a 1:1 copy, which nonlinear
+// effects (especially gamma near black and hue near grey) can amplify into visible errors.
+@fragment
+fn fs_fx_source(in: VOut) -> @location(0) vec4<f32> {
+    let decimation = round(1.0 / u.m0.x);
+    return layer_color(in.pos.xy * decimation);
+}
+
 // Normal and Dissolve (fixed-function premultiplied "over").
 @fragment
 fn fs(in: VOut) -> @location(0) vec4<f32> {

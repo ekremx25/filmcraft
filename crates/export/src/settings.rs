@@ -392,8 +392,8 @@ impl ExportSettings {
     pub fn audio_codec(&self) -> AudioCodec {
         match (self.format, self.audio.codec) {
             (Format::Wav | Format::Aiff | Format::MxfOp1a | Format::MxfOpAtom, _) => AudioCodec::Pcm,
-            (Format::H264, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
-            (_, AudioCodec::Auto) if self.format == Format::H264 => AudioCodec::Aac,
+            (Format::H264 | Format::Hevc | Format::Av1, _) if self.multiplexer == Multiplexer::Mp4 => AudioCodec::Aac,
+            (_, AudioCodec::Auto) if matches!(self.format, Format::H264 | Format::Hevc | Format::Av1) => AudioCodec::Aac,
             (_, AudioCodec::Auto) => AudioCodec::Pcm,
             (_, c) => c,
         }
@@ -411,7 +411,7 @@ impl ExportSettings {
 
     /// File extension of the output.
     pub fn extension(&self) -> &'static str {
-        if self.format == Format::H264 && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
+        if matches!(self.format, Format::H264 | Format::Hevc | Format::Av1) && self.multiplexer == Multiplexer::Mov { "mov" } else { self.format.extension() }
     }
 
     /// Estimated output size in bytes for `duration` of a sequence (`seq_w`×`seq_h` at `seq_rate`).
@@ -421,7 +421,7 @@ impl ExportSettings {
         let fps = r.rate.num as f64 / r.rate.den as f64;
         let px = r.width as f64 * r.height as f64;
         let video_bps = match self.video_format() {
-            Format::H264 => r.target_kbps as f64 * 1000.0,
+            Format::H264 | Format::Hevc | Format::Av1 => r.target_kbps as f64 * 1000.0,
             Format::ProRes => crate::prores_profile(&self.prores_profile).nominal_mbps_1080p30() * 1e6 * px / (1920.0 * 1080.0) * fps / 29.97,
             Format::DnxHr => {
                 // nominal 1080p29.97 data rates of the DNxHR profiles (Mb/s)
@@ -481,17 +481,24 @@ impl ExportSettings {
             let par = self.pixel_aspect.map(|(n, d)| format!("{:.2}", n.max(1) as f64 / d.max(1) as f64)).unwrap_or_else(|| "1.0".into());
             let mut v = format!("{}x{} ({par}), {} fps, {}", r.width, r.height, r.rate.label(), self.field_order.label());
             match self.video_format() {
-                Format::H264 => {
-                    v += &format!(
-                        ", {} {}, {}",
-                        self.h264_profile.label(),
-                        self.h264_level.map(|l| format!("L{}.{}", l / 10, l % 10)).unwrap_or_else(|| "auto level".into()),
-                        self.bitrate_mode.label()
-                    );
-                    v += &match self.bitrate_mode {
-                        BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
-                        _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
-                    };
+                Format::H264 | Format::Hevc | Format::Av1 => {
+                    v += &format!(", {}", self.video_encoding.label());
+                    if self.video_format() == Format::H264 {
+                        v += &format!(
+                            ", {} {}",
+                            self.h264_profile.label(),
+                            self.h264_level.map(|l| format!("L{}.{}", l / 10, l % 10)).unwrap_or_else(|| "auto level".into())
+                        );
+                    }
+                    if let Some(qp) = self.hardware_qp.filter(|_| self.video_encoding != crate::VideoEncoding::Software) {
+                        v += &format!(", constant QP {qp}");
+                    } else {
+                        v += &format!(", {}", self.bitrate_mode.label());
+                        v += &match self.bitrate_mode {
+                            BitrateMode::Cbr => format!(", {}", mbps(r.target_kbps)),
+                            _ => format!(", Target {}, Max {}", mbps(r.target_kbps), mbps(r.max_kbps)),
+                        };
+                    }
                     v += &format!(", keyframe every {} frames", r.keyint);
                 }
                 Format::ProRes => {
@@ -524,8 +531,8 @@ impl ExportSettings {
             "No audio".to_string()
         };
         let container = match self.format {
-            Format::H264 if self.multiplexer == Multiplexer::Mov => "QuickTime",
-            Format::H264 => "MP4",
+            Format::H264 | Format::Hevc | Format::Av1 if self.multiplexer == Multiplexer::Mov => "QuickTime",
+            Format::H264 | Format::Hevc | Format::Av1 => "MP4",
             Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg => "QuickTime",
             Format::MxfOp1a | Format::MxfOpAtom => self.mxf_video_codec.label(),
             Format::PngSequence | Format::TiffSequence | Format::BmpSequence => "Image sequence",
@@ -533,7 +540,12 @@ impl ExportSettings {
         };
         let format = if container.is_empty() { self.format.label().to_string() } else { format!("{} ({container})", self.format.label()) };
         let estimated_bytes = self.estimate_bytes(seq_w, seq_h, seq_rate, seq_sr, duration);
-        Summary { format, video, audio, estimated_bytes, estimated_size: format_bytes(estimated_bytes) }
+        let estimated_size = if self.hardware_qp.is_some() && self.video_encoding != crate::VideoEncoding::Software {
+            "Variable (constant QP)".into()
+        } else {
+            format_bytes(estimated_bytes)
+        };
+        Summary { format, video, audio, estimated_bytes, estimated_size }
     }
 }
 

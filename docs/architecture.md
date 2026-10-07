@@ -690,3 +690,7 @@ other OS integration stays in `apps/filmcraft`.)
 Until they exist, that work lives elsewhere: keyframes and effect definitions in `project`, effects
 and the audio mix in `render`, playback in `ui-egui`, and OS integration (cpal, rfd,
 native menus) in `apps/filmcraft`. [ROADMAP.md](../ROADMAP.md) has the milestone status.
+
+Linux hardware export uses `export::hardware` for capability and encoder-selection policy, and
+`platform::vaapi` for native libva submission. It uses the existing renderer, `EncoderFrame`,
+`VideoEncoder` and MP4/MOV muxer. See [Linux VAAPI export](linux-vaapi-export.md).
