@@ -1,7 +1,8 @@
 # filmcraft-platform
 
-OS media integration for FilmCraft (layer L5): hardware video decoding through the operating
-system's codecs, behind `filmcraft_codecs::VideoDecoder`. It holds OS media FFI and nothing else.
+OS media integration for FilmCraft (layer L5): hardware video decoding and encoding through the
+operating system's codecs, behind `filmcraft_codecs::VideoDecoder` and
+`filmcraft_export::VideoEncoder`. It holds OS media FFI and nothing else.
 It is the one crate of the workspace allowed to contain `unsafe`, under the rules of
 [ADR 0001](../../docs/adr/0001-platform-ffi.md) and [AGENTS.md](../../AGENTS.md) §0.3.
 
@@ -21,7 +22,10 @@ let availability = filmcraft_platform::register(); // Available("VideoToolbox") 
   reorder buffer of the stream's own depth (`max_num_reorder_frames` /
   `sps_max_num_reorder_pics`) restores presentation order; a run starting at an HEVC CRA leaves
   out its RASL pictures, as our decoder does. Each seek (`reset`) starts a fresh session.
-- **Other systems:** `register()` does nothing and returns `Availability::Unavailable`.
+- **Linux encoding:** H.264, HEVC Main and AV1 Main via native libva, registered behind
+  `filmcraft_export::VideoEncoder`. SDR NV12, CBR/VBR/CQP; Auto/Hardware/Software policy.
+  See [Linux VAAPI export](../../docs/linux-vaapi-export.md) for setup, limits and verification.
+- **Other systems (decoding):** `register()` does nothing and returns `Availability::Unavailable`.
 - **`HybridDecoder`** (`hybrid.rs`, safe code): the hardware decoder plus the means to build our
   software decoder for the same `SampleEntry` (`filmcraft_codecs::software_video_decoder`). On a
   mid-stream failure (decode error, invalidated session, changed in-band parameter sets) it replays
@@ -65,5 +69,5 @@ playback with no dropped frames at Full, 1/2 and 1/4. Details in
 
 ## Not yet
 
-Zero-copy upload of `CVPixelBuffer`s into wgpu textures; hardware encoding; Media Foundation /
+Zero-copy upload of `CVPixelBuffer`s into wgpu textures; Media Foundation /
 D3D11 (Windows) and VA-API (Linux) decoders; field-coded H.264.

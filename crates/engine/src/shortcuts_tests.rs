@@ -84,13 +84,17 @@ fn assign_reassigns_conflicts_and_undoes() {
     // add a second shortcut, keep a conflict on purpose
     s.execute("shortcuts.set", json!({"command": "edit.undo", "keys": "Cmd+Z", "add": true})).unwrap();
     assert_eq!(s.shortcuts.for_command("edit.undo").iter().filter(|b| b.panel.is_none()).count(), 2);
+    // Ctrl/Cmd folding can already produce conflicts on Linux/Windows. Compare with the
+    // starting state, rather than assuming the macOS default's empty conflict list.
+    let before = s.execute("shortcuts.conflicts", json!({})).unwrap()["conflicts"].clone();
     let r = s.execute("shortcuts.set", json!({"command": "edit.redo", "keys": "M", "keepConflicts": true})).unwrap();
-    assert_eq!(r["conflicts"].as_array().unwrap().len(), 1, "{r}");
+    assert_eq!(r["conflicts"].as_array().unwrap().len(), before.as_array().unwrap().len() + 1, "{r}");
+    assert!(r["conflicts"].as_array().unwrap().iter().any(|c| c["keys"] == "M" && c["commands"] == json!(["markers.add", "edit.redo"])));
     let c = s.execute("shortcuts.conflicts", json!({"platform": "mac"})).unwrap();
     assert_eq!(c["conflicts"][0]["keys"], json!("M"));
     // undo / redo within the editor
     s.execute("shortcuts.undo", json!({})).unwrap();
-    assert!(s.execute("shortcuts.conflicts", json!({})).unwrap()["conflicts"].as_array().unwrap().is_empty());
+    assert_eq!(s.execute("shortcuts.conflicts", json!({})).unwrap()["conflicts"], before);
     s.execute("shortcuts.undo", json!({})).unwrap();
     s.execute("shortcuts.undo", json!({})).unwrap();
     assert_eq!(s.shortcuts.primary("edit.undo").as_deref(), Some("Cmd+Z"));

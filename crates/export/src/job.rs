@@ -31,7 +31,7 @@ use crate::pipeline::Pipeline;
 use crate::settings::{AudioCodec, BitrateMode, Multiplexer};
 use crate::{
     AudioEncoder, ColorSignal, EncodedPacket, EncoderFrame, ExportError, ExportSettings, Format, H264Pass, Out, Progress, Report, Result, VideoEncoder,
-    audio_factories, export_range, frame_span, video_factories,
+    audio_factories, export_range, frame_span,
 };
 
 /// Output frames per interleaved group: the video packets of these frames, then the audio up to
@@ -82,16 +82,14 @@ pub struct Exporter {
 
 /// Whether [`Exporter`] handles a format.
 pub fn stepped(format: Format) -> bool {
-    matches!(format, Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom)
+    matches!(
+        format,
+        Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg | Format::MxfOp1a | Format::MxfOpAtom
+    )
 }
 
 fn make_venc(settings: &ExportSettings, w: u32, h: u32, rate: FrameRate) -> Result<Box<dyn VideoEncoder>> {
-    video_factories()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .find_map(|fac| fac(settings.video_format(), w, h, rate, settings))
-        .ok_or_else(|| ExportError::Unsupported(format!("{} encoder not available yet", settings.video_format().label())))?
+    crate::hardware::make_encoder(settings, w, h, rate)
 }
 
 impl Exporter {
@@ -104,7 +102,9 @@ impl Exporter {
         let q = project.sequence(seq).ok_or(ExportError::NoSequence)?;
         // HDR sequences export HDR (H.264 / ProRes / DNxHR / APV) unless SDR is asked for
         let pipe = q.settings.color;
-        let hdr_out = pipe.working.is_hdr() && !settings.sdr && matches!(settings.video_format(), Format::H264 | Format::ProRes | Format::DnxHr | Format::Apv);
+        let hdr_out = pipe.working.is_hdr()
+            && !settings.sdr
+            && matches!(settings.video_format(), Format::H264 | Format::Hevc | Format::Av1 | Format::ProRes | Format::DnxHr | Format::Apv);
         let mut settings = settings.clone();
         settings.signal = match (hdr_out, pipe.working) {
             (true, filmcraft_color::WorkingSpace::Rec2100Pq) => ColorSignal::PQ,
@@ -128,7 +128,11 @@ impl Exporter {
             progress.set_status(format!("Exporting {} frames ({})", nframes, settings.format.label()));
         }
         let venc = make_venc(&settings, pipe.w, pipe.h, pipe.rate)?;
-        let brand = if settings.format == Format::H264 && settings.multiplexer == Multiplexer::Mp4 { Brand::Mp4 } else { Brand::Mov };
+        let brand = if matches!(settings.format, Format::H264 | Format::Hevc | Format::Av1) && settings.multiplexer == Multiplexer::Mp4 {
+            Brand::Mp4
+        } else {
+            Brand::Mov
+        };
         let audio = if settings.has_audio() { Some(AudioOut::new(project.clone(), seq, &settings, range)?) } else { None };
         let aenc: Option<Box<dyn AudioEncoder>> = match (&audio, settings.audio_codec()) {
             (Some(a), AudioCodec::Aac) => {

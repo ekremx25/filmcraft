@@ -22,8 +22,8 @@
 use egui::{Align2, Color32, Rect, Sense, pos2, vec2};
 use filmcraft_engine::export::presets::{DEFAULT_PRESET, preset_key};
 use filmcraft_engine::export::{
-    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay, builtin_presets,
-    format_bytes,
+    AudioCodec, BitrateMode, ExportSettings, FieldOrder, Format, H264Profile, Multiplexer, MxfVideoCodec, Placement, Scaling, TextOverlay, VideoEncoding,
+    builtin_presets, format_bytes, hardware,
 };
 use filmcraft_engine::time::{FrameRate, Tick};
 use serde::{Deserialize, Serialize};
@@ -382,6 +382,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         .active_sequence()
         .map(|q| (q.settings.width, q.settings.height, q.settings.frame_rate, q.settings.sample_rate))
         .unwrap_or((1920, 1080, FrameRate::FPS_24, 48_000));
+    let sequence_hdr = app.session.active_sequence().is_some_and(|q| q.settings.color.working.is_hdr());
     let has_captions = app.session.active_sequence().is_some_and(|q| !q.caption_tracks.is_empty());
     let all_presets = app.session.export_presets.all();
     let favs: Vec<String> = all_presets.iter().filter(|p| app.session.export_presets.is_favorite(&p.name)).map(|p| p.name.clone()).collect();
@@ -445,6 +446,8 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
                     let keep = ex.settings.clone();
                     ex.settings = ExportSettings {
                         format: f,
+                        video_encoding: if matches!(f, Format::H264 | Format::Hevc | Format::Av1) { keep.video_encoding } else { VideoEncoding::Auto },
+                        hardware_qp: None,
                         frame_size: keep.frame_size,
                         frame_rate: keep.frame_rate,
                         effects: keep.effects,
@@ -457,11 +460,11 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         ui.add_space(8.0);
         let s = &mut ex.settings;
         if s.has_video() && section(ui, &mut reg, &mut ex.open_sections, "video", "Video", &t) {
-            video_section(ui, &mut reg, s, &t, seq_w, seq_h);
+            video_section(ui, &mut reg, s, &t, seq_w, seq_h, sequence_hdr);
         }
         if (s.has_audio()
             || !s.has_video()
-            || s.format == Format::H264
+            || matches!(s.format, Format::H264 | Format::Hevc | Format::Av1)
             || matches!(s.format, Format::ProRes | Format::DnxHr | Format::Apv | Format::Mjpeg)
             || s.format.is_mxf())
             && !s.is_image_sequence()
@@ -470,7 +473,7 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
         {
             audio_section(ui, &mut reg, s, &t, seq_sr);
         }
-        if s.format == Format::H264 && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", "Multiplexer", &t) {
+        if matches!(s.format, Format::H264 | Format::Hevc | Format::Av1) && section(ui, &mut reg, &mut ex.open_sections, "multiplexer", "Multiplexer", &t) {
             row(ui, &t, "Multiplexer", |ui| {
                 let cur = if s.multiplexer == Multiplexer::Mp4 { "MP4" } else { "QuickTime" };
                 if let Some(i) = combo(ui, &mut reg, "export.multiplexer", cur, &opts(&["MP4", "QuickTime"]), 160.0) {
@@ -539,7 +542,12 @@ fn settings_column(app: &mut FilmcraftApp, ui: &mut egui::Ui, rect: Rect) {
     reg.flush(app);
 }
 
-fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32) {
+fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &Tokens, seq_w: u32, seq_h: u32, sequence_hdr: bool) {
+    if sequence_hdr {
+        row(ui, t, "Output Color", |ui| {
+            check(ui, reg, "export.video.sdr", &mut s.sdr, "Convert to SDR Rec.709");
+        });
+    }
     // frame size
     let mut match_size = s.frame_size.is_none();
     row(ui, t, "Frame Size", |ui| {
@@ -593,53 +601,124 @@ fn video_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         });
     }
     match s.video_format() {
-        Format::H264 => {
-            row(ui, t, "Profile", |ui| {
-                let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
-                let labels: Vec<(String, bool)> = o.iter().map(|p| (p.label().to_string(), true)).collect();
-                if let Some(i) = combo(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0) {
-                    s.h264_profile = o[i];
+        Format::H264 | Format::Hevc | Format::Av1 => {
+            row(ui, t, "Encoding", |ui| {
+                let caps = hardware::capabilities();
+                let mut modes = vec![VideoEncoding::Auto];
+                if caps.iter().any(|c| c.format == s.format) {
+                    modes.push(VideoEncoding::Hardware);
                 }
-            });
-            row(ui, t, "Level", |ui| {
-                let levels: [Option<u8>; 13] =
-                    [None, Some(30), Some(31), Some(32), Some(40), Some(41), Some(42), Some(50), Some(51), Some(52), Some(60), Some(61), Some(62)];
-                let lab = |l: &Option<u8>| l.map(|l| format!("{}.{}", l / 10, l % 10)).unwrap_or_else(|| "Auto".into());
-                let labels: Vec<(String, bool)> = levels.iter().map(|l| (lab(l), true)).collect();
-                if let Some(i) = combo(ui, reg, "export.video.level", &lab(&s.h264_level), &labels, 120.0) {
-                    s.h264_level = levels[i];
+                modes.push(VideoEncoding::Software);
+                let labels: Vec<_> = modes
+                    .iter()
+                    .map(|m| {
+                        (
+                            m.label().to_string(),
+                            match m {
+                                VideoEncoding::Hardware => hardware::supports(s) && (!sequence_hdr || s.sdr),
+                                VideoEncoding::Software => s.format == Format::H264,
+                                VideoEncoding::Auto => true,
+                            },
+                        )
+                    })
+                    .collect();
+                if let Some(i) = combo(ui, reg, "export.video.encoding", s.video_encoding.label(), &labels, 180.0) {
+                    s.video_encoding = modes[i];
                 }
+                let device = caps.iter().find(|c| c.format == s.format).map(|c| c.device.as_str()).unwrap_or("No compatible VAAPI device");
+                ui.label("?").on_hover_text(format!("VAAPI uses the Linux GPU video encoder. Auto falls back to software when available. Hardware never silently uses the CPU. SDR 8-bit; CBR, VBR or constant QP.\nDevice: {device}"));
             });
-            row(ui, t, "Bitrate Encoding", |ui| {
-                let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
-                let labels: Vec<(String, bool)> = o.iter().map(|m| (m.label().to_string(), true)).collect();
-                if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
-                    s.bitrate_mode = o[i];
-                }
-            });
-            if let Some(bpp) = s.adaptive_bitrate {
-                row(ui, t, "Target Bitrate", |ui| {
-                    ui.label(egui::RichText::new(format!("Adaptive ({bpp} bits per pixel)")).size(12.0));
-                    let r = ui.small_button("Set");
-                    reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
-                    if r.clicked() {
-                        s.adaptive_bitrate = None;
+            if s.format == Format::H264 {
+                row(ui, t, "Profile", |ui| {
+                    let o = [H264Profile::Baseline, H264Profile::Main, H264Profile::High];
+                    let labels: Vec<(String, bool)> = o
+                        .iter()
+                        .map(|p| {
+                            let mut candidate = s.clone();
+                            candidate.h264_profile = *p;
+                            (p.label().to_string(), s.video_encoding != VideoEncoding::Hardware || hardware::supports(&candidate))
+                        })
+                        .collect();
+                    if let Some(i) = combo(ui, reg, "export.video.profile", s.h264_profile.label(), &labels, 120.0) {
+                        s.h264_profile = o[i];
                     }
                 });
+                row(ui, t, "Level", |ui| {
+                    let levels: [Option<u8>; 13] =
+                        [None, Some(30), Some(31), Some(32), Some(40), Some(41), Some(42), Some(50), Some(51), Some(52), Some(60), Some(61), Some(62)];
+                    let lab = |l: &Option<u8>| l.map(|l| format!("{}.{}", l / 10, l % 10)).unwrap_or_else(|| "Auto".into());
+                    let labels: Vec<(String, bool)> = levels.iter().map(|l| (lab(l), true)).collect();
+                    if let Some(i) = combo(ui, reg, "export.video.level", &lab(&s.h264_level), &labels, 120.0) {
+                        s.h264_level = levels[i];
+                    }
+                });
+            }
+            if s.video_encoding == VideoEncoding::Hardware {
+                row(ui, t, "Rate Control", |ui| {
+                    let mut options = Vec::new();
+                    for (label, mode, qp) in
+                        [("CBR", BitrateMode::Cbr, None), ("VBR", BitrateMode::Vbr1Pass, None), ("Quality (constant QP)", BitrateMode::Vbr1Pass, Some(26))]
+                    {
+                        let mut candidate = s.clone();
+                        candidate.bitrate_mode = mode;
+                        candidate.hardware_qp = qp;
+                        options.push((label.to_string(), hardware::supports(&candidate)));
+                    }
+                    let current = if s.hardware_qp.is_some() {
+                        "Quality (constant QP)"
+                    } else if s.bitrate_mode == BitrateMode::Cbr {
+                        "CBR"
+                    } else {
+                        "VBR"
+                    };
+                    if let Some(i) = combo(ui, reg, "export.video.hardwareRateControl", current, &options, 180.0) {
+                        s.bitrate_mode = if i == 0 { BitrateMode::Cbr } else { BitrateMode::Vbr1Pass };
+                        s.hardware_qp = if i == 2 { Some(if s.format == Format::Av1 { 100 } else { 26 }) } else { None };
+                    }
+                });
+                if let Some(qp) = s.hardware_qp.as_mut() {
+                    row(ui, t, "Quantizer", |ui| {
+                        let mut v = *qp as f64;
+                        drag(ui, reg, "export.video.hardwareQp", &mut v, 1.0..=if s.format == Format::Av1 { 255.0 } else { 51.0 }, 1.0, "", 0);
+                        *qp = v as u8;
+                        ui.label("Lower = higher quality")
+                            .on_hover_text("Driver constant quantizer; this is not software CRF. Bitrate is not constrained in this mode.");
+                    });
+                }
             } else {
-                row(ui, t, "Target Bitrate", |ui| {
-                    let mut mbps = s.bitrate_kbps as f64 / 1000.0;
-                    if drag(ui, reg, "export.video.target", &mut mbps, 0.1..=800.0, 0.1, " Mbps", 1) {
-                        s.bitrate_kbps = (mbps * 1000.0).round() as u32;
+                row(ui, t, "Bitrate Encoding", |ui| {
+                    let o = [BitrateMode::Cbr, BitrateMode::Vbr1Pass, BitrateMode::Vbr2Pass];
+                    let labels: Vec<_> = o.iter().map(|m| (m.label().to_string(), s.format == Format::H264 || *m != BitrateMode::Vbr2Pass)).collect();
+                    if let Some(i) = combo(ui, reg, "export.video.bitrateMode", s.bitrate_mode.label(), &labels, 140.0) {
+                        s.bitrate_mode = o[i];
                     }
                 });
-                if s.bitrate_mode != BitrateMode::Cbr {
-                    row(ui, t, "Maximum Bitrate", |ui| {
-                        let mut mbps = s.max_bitrate_kbps.unwrap_or(s.bitrate_kbps * 3 / 2) as f64 / 1000.0;
-                        if drag(ui, reg, "export.video.max", &mut mbps, 0.1..=1000.0, 0.1, " Mbps", 1) {
-                            s.max_bitrate_kbps = Some((mbps * 1000.0).round() as u32);
+            }
+            if s.video_encoding != VideoEncoding::Hardware || s.hardware_qp.is_none() {
+                if let Some(bpp) = s.adaptive_bitrate {
+                    row(ui, t, "Target Bitrate", |ui| {
+                        ui.label(egui::RichText::new(format!("Adaptive ({bpp} bits per pixel)")).size(12.0));
+                        let r = ui.small_button("Set");
+                        reg.add("export.video.fixedBitrate", r.rect, "Set a fixed bitrate");
+                        if r.clicked() {
+                            s.adaptive_bitrate = None;
                         }
                     });
+                } else {
+                    row(ui, t, "Target Bitrate", |ui| {
+                        let mut mbps = s.bitrate_kbps as f64 / 1000.0;
+                        if drag(ui, reg, "export.video.target", &mut mbps, 0.1..=800.0, 0.1, " Mbps", 1) {
+                            s.bitrate_kbps = (mbps * 1000.0).round() as u32;
+                        }
+                    });
+                    if s.bitrate_mode != BitrateMode::Cbr {
+                        row(ui, t, "Maximum Bitrate", |ui| {
+                            let mut mbps = s.max_bitrate_kbps.unwrap_or(s.bitrate_kbps * 3 / 2) as f64 / 1000.0;
+                            if drag(ui, reg, "export.video.max", &mut mbps, 0.1..=1000.0, 0.1, " Mbps", 1) {
+                                s.max_bitrate_kbps = Some((mbps * 1000.0).round() as u32);
+                            }
+                        });
+                    }
                 }
             }
             row(ui, t, "Key Frame Distance", |ui| {
@@ -706,13 +785,15 @@ fn audio_section(ui: &mut egui::Ui, reg: &mut Reg, s: &mut ExportSettings, t: &T
         }
     }
     row(ui, t, "Audio Format", |ui| {
-        let fixed = s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4 || audio_only || s.format.is_mxf();
+        let fixed = matches!(s.format, Format::H264 | Format::Hevc | Format::Av1) && s.multiplexer == Multiplexer::Mp4 || audio_only || s.format.is_mxf();
         let cur = match s.audio_codec() {
             AudioCodec::Aac => "AAC",
             _ => "Uncompressed (PCM)",
         };
-        let labels =
-            vec![("AAC".to_string(), !audio_only), ("Uncompressed (PCM)".to_string(), !(s.format == Format::H264 && s.multiplexer == Multiplexer::Mp4))];
+        let labels = vec![
+            ("AAC".to_string(), !audio_only),
+            ("Uncompressed (PCM)".to_string(), !(matches!(s.format, Format::H264 | Format::Hevc | Format::Av1) && s.multiplexer == Multiplexer::Mp4)),
+        ];
         if fixed {
             ui.label(cur);
         } else if let Some(i) = combo(ui, reg, "export.audio.codec", cur, &labels, 180.0) {

@@ -316,3 +316,7 @@ At load ~25–60 the same final build plays h264-1080, stack3 and h264-2160 at F
 in 3 of 3 runs (192/0) and render previews 192/0. The 4K fixture needs ~4 cores of decode per
 real-time second (≈160 ms CPU per frame at 170 Mbit/s); the demo project's procedural footage
 ~190 ms per Full-resolution frame.
+
+Linux VAAPI export integration: `cargo test -p filmcraft-platform --test vaapi -- --nocapture`.
+It skips without a compatible render node; `FILMCRAFT_REQUIRE_VAAPI=1` requires hardware.
+See [Linux VAAPI export](linux-vaapi-export.md) for the codec/mode matrix and external oracles.
