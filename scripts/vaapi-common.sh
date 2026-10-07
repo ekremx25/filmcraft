@@ -34,7 +34,7 @@ conflicts() {
 verify_build() {
     command -v cargo >/dev/null || fail 'cargo is required.'
     export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-1}" RUST_TEST_THREADS="${RUST_TEST_THREADS:-2}"
-    local step='initialization' fmt='NOT RUN' check='NOT RUN' tests='NOT RUN' release='NOT RUN' binary='NOT BUILT'
+    local step='initialization' fmt='NOT RUN' check='NOT RUN' tests='NOT RUN' release='NOT RUN' binary='NOT BUILT' appimage='NOT BUILT'
     # This trap also reports interrupted builds; the rebased branch is never reset.
     trap 'printf "\nFilmCraft validation: FAILED (%s)\ncargo fmt: %s\ncargo check: %s\ncargo test: %s\nrelease build: %s\nResolve the failure, then run ./update-filmcraft-vaapi.sh --verify-only\n" "$step" "$fmt" "$check" "$tests" "$release" >&2' ERR
     step='cargo fmt'; cargo fmt --check; fmt=PASS
@@ -81,9 +81,13 @@ print(paths[-1])
     step='AppImage packaging'
     if [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]]; then
         "$root/scripts/build-appimage.sh" --binary "$binary"
+        local version
+        version=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml","rb"))["workspace"]["package"]["version"])')
+        appimage="$root/dist/FilmCraft-$version-VAAPI-linux-x86_64.AppImage"
+        [[ -s $appimage && -x $appimage ]] || fail "Packager did not produce an executable AppImage: $appimage"
     else
         echo 'AppImage packaging: SKIPPED (requires Linux x86_64)'
     fi
     trap - ERR
-    printf '\nFilmCraft upstream update: %s\nUpstream revision: %s\nVAAPI patch: APPLIED\ncargo fmt: %s\ncargo check: %s\ncargo test: %s\nrelease build: %s\nbinary: %s\n' "${update_result:-NOT REQUESTED (validation only)}" "$(git rev-parse main 2>/dev/null || git rev-parse HEAD)" "$fmt" "$check" "$tests" "$release" "$binary"
+    printf '\nFilmCraft upstream update: %s\nUpstream revision: %s\nVAAPI patch: APPLIED\ncargo fmt: %s\ncargo check: %s\ncargo test: %s\nrelease build: %s\nbinary: %s\nAppImage: %s\n' "${update_result:-NOT REQUESTED (validation only)}" "$(git rev-parse main 2>/dev/null || git rev-parse HEAD)" "$fmt" "$check" "$tests" "$release" "$binary" "$appimage"
 }

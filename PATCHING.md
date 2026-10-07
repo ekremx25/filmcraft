@@ -19,9 +19,10 @@ based on filenames or commit messages. Merge commits are rejected.
 ## First installation
 
 For this existing installation, the working VAAPI code belongs on
-`vaapi-hardware-encode`; keep `origin` pointing to
-`https://github.com/storytold/filmcraft.git`. The scripts display the origin URL
-before using it. They never change the remote URL.
+`vaapi-hardware-encode`. `origin` is your fork,
+`https://github.com/ekremx25/filmcraft.git`; `upstream` is the original project,
+`https://github.com/storytold/filmcraft.git`. The updater displays and fetches
+only the upstream URL. It never changes remote URLs or pushes to any remote.
 
 For a new machine, clone your maintained repository and check out its VAAPI
 branch, or clone upstream and apply an exported patch series as described below.
@@ -54,28 +55,48 @@ commit your intended changes first. Nothing is automatically stashed.
 
 ## Using your GitHub fork
 
-This workflow reserves `origin` for upstream updates. Add your personal fork as
-`fork` and publish the custom branch there; use your own GitHub URL:
+Use this remote model:
+
+| Remote | Fetch URL | Purpose |
+| --- | --- | --- |
+| `origin` | `https://github.com/ekremx25/filmcraft.git` | Your fork; publish custom commits here |
+| `upstream` | `https://github.com/storytold/filmcraft.git` | Read upstream `main`; never push here |
+
+For a fresh clone of your fork:
 
 ```bash
-git remote add fork https://github.com/YOUR-ACCOUNT/filmcraft.git
-git push -u fork vaapi-hardware-encode
+git clone https://github.com/ekremx25/filmcraft.git
+cd filmcraft
+git remote add upstream https://github.com/storytold/filmcraft.git
+git config remote.upstream.pushurl DISABLED
+git config remote.pushDefault origin
+git config branch.vaapi-hardware-encode.pushRemote origin
+git fetch upstream
+git branch --set-upstream-to=upstream/main main
+git switch vaapi-hardware-encode
 ```
 
-If you cloned your fork first, rename that remote to `fork` and add the original
-repository as `origin` before running the updater:
+For an existing checkout using the old names (`origin` was storytold and `fork`
+was ekremx25), first inspect `git remote -v`, then migrate **once**:
 
 ```bash
-git remote rename origin fork
-git remote add origin https://github.com/storytold/filmcraft.git
+git remote rename origin upstream
+git remote rename fork origin
+git config remote.upstream.pushurl DISABLED
+git config remote.pushDefault origin
+git config branch.vaapi-hardware-encode.pushRemote origin
 ```
 
-Inspect `git remote -v` before making these changes. Do not rename an already
-correct upstream remote. The updater fetches upstream but **never pushes**.
-After a rebase, updating a previously published custom branch rewrites its
-history. Coordinate with anyone using that branch, inspect the result, and use
-an explicit `git push --force-with-lease fork vaapi-hardware-encode` yourself
-when appropriate. The script never force-pushes on your behalf.
+Renaming preserves remote-tracking refs and updates branch tracking. Do not
+repeat this migration on a checkout already using the correct names. The local
+upstream push URL is deliberately unusable; its fetch URL remains valid.
+The updater has no push command and no fallback to origin if upstream is missing.
+
+Publish to your fork explicitly: `git push -u origin vaapi-hardware-encode`.
+After a rebase, a previously published custom branch has rewritten history;
+coordinate with other users, inspect the changes, and use
+`git push --force-with-lease origin vaapi-hardware-encode` when appropriate.
+The updater itself never force-pushes (or pushes at all).
 
 ## Updating FilmCraft and reapplying VAAPI changes
 
@@ -93,11 +114,11 @@ The updater:
    and failure. No existing backup is moved or deleted.
 3. Enables local `rerere.enabled=true` and `rerere.autoupdate=false` so Git
    remembers resolutions but lets you review them before staging.
-4. Fetches `origin/main`, requires local `main` to be its ancestor, switches to
+4. Fetches `upstream/main`, requires local `main` to be its ancestor, switches to
    `main`, and fast-forwards it. A rewritten upstream or local divergence stops
    the update for manual review. A `main` branch checked out in another worktree
    can also prevent switching; no worktree is modified forcibly.
-5. Switches back and rebases the custom commits onto `main`. Autostash, automatic
+5. Switches back and rebases the custom commits onto `upstream/main`. Autostash, automatic
    updating of other refs, autosquash, fork-point selection, and merge recreation
    are disabled for this rebase. This also protects backup refs when your global
    Git configuration enables `rebase.updateRefs`.
@@ -223,8 +244,15 @@ Keep the maintenance scripts together (the apply script sources
 absolute location in the maintained source checkout:
 
 ```bash
-git clone https://github.com/storytold/filmcraft.git ~/filmcraft-new
+git clone https://github.com/ekremx25/filmcraft.git ~/filmcraft-new
 cd ~/filmcraft-new
+git remote add upstream https://github.com/storytold/filmcraft.git
+git config remote.upstream.pushurl DISABLED
+git config remote.pushDefault origin
+git fetch upstream
+git switch main
+git merge --ff-only upstream/main
+git branch --set-upstream-to=upstream/main main
 /path/to/maintained-filmcraft/scripts/apply-vaapi-patch.sh /tmp/filmcraft-vaapi-patches
 ```
 
@@ -260,7 +288,10 @@ updates of an existing VAAPI branch, always prefer the rebase updater.
 python3 scripts/test-vaapi-workflow.py
 ```
 
-Tests create isolated temporary repositories and a local bare upstream. They
+Tests create isolated temporary repositories with separate bare origin (fork)
+and upstream remotes. They verify that updates follow upstream while the fork
+remains unchanged, and that verification invokes the packager after release
+building and rejects a missing AppImage in `dist/`. They
 exercise real Git updates, backup preservation, dirty-tree rejection, dry-run,
 main divergence, conflict/abort/retry/continue, validation failure, patch
 export/application, damaged metadata, and detached/wrong-repository rejection.
@@ -274,6 +305,8 @@ The updater now packages an AppImage **after** all gates and the desktop release
 build pass. It calls `scripts/build-appimage.sh`, a frontend to the existing
 `packaging/linux/package.sh --skip-build --formats appimage`. Package creation
 failure fails the update; the rebased branch and backup are retained.
+`verify_build` also checks that the versioned AppImage exists, is nonempty and
+executable in `dist/`, and prints that path in its final summary.
 
 ```bash
 ./scripts/build-appimage.sh

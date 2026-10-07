@@ -21,13 +21,13 @@ class Workflow(unittest.TestCase):
                         GIT_AUTHOR_NAME='Workflow Test', GIT_AUTHOR_EMAIL='test@example.invalid',
                         GIT_COMMITTER_NAME='Workflow Test', GIT_COMMITTER_EMAIL='test@example.invalid',
                         GIT_EDITOR='true', GIT_SEQUENCE_EDITOR='true')
-        self.run_cmd(['git', 'init', '--bare', str(self.home / 'origin.git')])
+        self.run_cmd(['git', 'init', '--bare', str(self.home / 'upstream.git')])
         self.git('init', '-b', 'main')
         for name, value in {
-            'Cargo.toml': '[workspace]\nmembers = ["apps/filmcraft"]\n',
+            'Cargo.toml': '[workspace]\nmembers = ["apps/filmcraft"]\n[workspace.package]\nversion = "0.1.0"\n',
             'apps/filmcraft/Cargo.toml': '[package]\nname = "filmcraft"\nversion = "0.1.0"\n',
             'crates/platform/Cargo.toml': '[package]\nname = "filmcraft-platform"\n',
-            'feature.txt': 'base\n', 'upstream.txt': 'base\n',
+            '.gitignore': '/dist/\n', 'feature.txt': 'base\n', 'upstream.txt': 'base\n',
         }.items():
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,16 +35,19 @@ class Workflow(unittest.TestCase):
         self.git('add', '.')
         self.git('commit', '-m', 'Upstream base')
         self.base = self.git('rev-parse', 'HEAD')
-        self.git('remote', 'add', 'origin', str(self.home / 'origin.git'))
-        self.git('push', 'origin', 'main')
-        self.run_cmd(['git', 'clone', '-b', 'main', str(self.home / 'origin.git'), str(self.home / 'upstream')])
+        self.git('remote', 'add', 'upstream', str(self.home / 'upstream.git'))
+        self.git('push', 'upstream', 'main')
+        self.run_cmd(['git', 'clone', '-b', 'main', str(self.home / 'upstream.git'), str(self.home / 'upstream')])
+        # origin is a separate fork: updates must never read or write its main.
+        self.run_cmd(['git', 'clone', '--bare', str(self.home / 'upstream.git'), str(self.home / 'fork.git')])
+        self.git('remote', 'add', 'origin', str(self.home / 'fork.git'))
         self.git('switch', '-c', 'vaapi-hardware-encode')
         (self.repo / 'scripts').mkdir()
         for name in ['update-filmcraft-vaapi.sh', 'scripts/vaapi-common.sh',
                      'scripts/export-vaapi-patch.sh', 'scripts/apply-vaapi-patch.sh']:
             shutil.copy2(SOURCE / name, self.repo / name)
         packager = self.repo / 'scripts/build-appimage.sh'
-        packager.write_text('#!/usr/bin/env bash\necho "appimage $*" >> "$CARGO_TEST_LOG"\n[[ ${FAIL_CARGO:-} != appimage ]]\n')
+        packager.write_text('#!/usr/bin/env bash\nset -e\necho "appimage $*" >> "$CARGO_TEST_LOG"\n[[ ${FAIL_CARGO:-} != appimage ]]\n[[ ${FAIL_CARGO:-} != missing-image ]] || exit 0\nmkdir -p dist\necho fixture > dist/FilmCraft-0.1.0-VAAPI-linux-x86_64.AppImage\nchmod +x dist/*.AppImage\n')
         packager.chmod(0o755)
         (self.repo / 'feature.txt').write_text('local VAAPI\n')
         self.git('add', '.')
@@ -100,9 +103,14 @@ if args[0]=='build':
     def test_success_and_backup_with_update_refs_enabled(self):
         upstream = self.advance()
         self.git('config', 'rebase.updateRefs', 'true')
+        remote_refs = {name: self.run_cmd(['git', '--git-dir', str(self.home/name), 'show-ref']) for name in ('fork.git', 'upstream.git')}
         result = self.update()
+        for name, refs in remote_refs.items():
+            self.assertEqual(self.run_cmd(['git', '--git-dir', str(self.home/name), 'show-ref']), refs)
         self.assertIn('FilmCraft upstream update: SUCCESS', result)
         self.assertEqual(self.git('rev-parse', 'main'), upstream)
+        self.assertEqual(self.run_cmd(['git', '--git-dir', str(self.home/'fork.git'), 'rev-parse', 'main']), self.base)
+        self.assertEqual(self.run_cmd(['git', '--git-dir', str(self.home/'upstream.git'), 'rev-parse', 'main']), upstream)
         self.assertEqual(self.git('rev-parse', self.backup()), self.tip)
         self.assertEqual(self.git('branch', '--show-current'), 'vaapi-hardware-encode')
         self.assertEqual((self.repo / 'feature.txt').read_text(), 'local VAAPI\n')
@@ -172,6 +180,19 @@ if args[0]=='build':
         self.assertNotIn('FilmCraft upstream update: SUCCESS', result)
         self.assertEqual(self.git('status', '--porcelain'), '')
 
+    def test_packager_success_without_artifact_is_rejected(self):
+        self.env['FAIL_CARGO'] = 'missing-image'
+        output = self.update('--verify-only', ok=False)
+        self.assertIn('did not produce an executable AppImage', output)
+        self.assertNotIn('FilmCraft upstream update: SUCCESS', output)
+
+    def test_verify_only_packages_into_dist(self):
+        output = self.update('--verify-only')
+        self.assertIn('AppImage: '+str(self.repo/'dist/FilmCraft-0.1.0-VAAPI-linux-x86_64.AppImage'), output)
+        commands = (self.home/'cargo.log').read_text()
+        self.assertLess(commands.index('build --release'), commands.index('appimage --binary'))
+        self.assertTrue((self.repo/'dist/FilmCraft-0.1.0-VAAPI-linux-x86_64.AppImage').is_file())
+
     def export(self):
         output = self.home / 'portable patches'
         self.run_cmd([str(SOURCE / 'scripts/export-vaapi-patch.sh'), str(output)])
@@ -192,9 +213,9 @@ if args[0]=='build':
     def test_apply_conflict_and_abort(self):
         patches = self.export()
         upstream = self.advance(conflict=True)
-        self.git('fetch', 'origin')
+        self.git('fetch', 'upstream')
         self.git('switch', 'main')
-        self.git('merge', '--ff-only', 'origin/main')
+        self.git('merge', '--ff-only', 'upstream/main')
         out = self.run_cmd([str(SOURCE / 'scripts/apply-vaapi-patch.sh'), str(patches), 'portable'], ok=False)
         self.assertIn('git am --abort', out)
         self.git('am', '--abort')
@@ -202,10 +223,10 @@ if args[0]=='build':
         self.assertEqual(self.git('status', '--porcelain'), '')
 
     def test_missing_remote_and_fetch_failure(self):
-        self.git('remote', 'remove', 'origin')
-        self.assertIn('origin is missing', self.update(ok=False))
+        self.git('remote', 'remove', 'upstream')
+        self.assertIn('upstream is missing', self.update(ok=False))
         self.assertEqual(self.git('rev-parse', 'HEAD'), self.tip)
-        self.git('remote', 'add', 'origin', str(self.home / 'missing.git'))
+        self.git('remote', 'add', 'upstream', str(self.home / 'missing.git'))
         self.update(ok=False)
         self.assertEqual(self.git('rev-parse', self.backup()), self.tip)
         self.assertEqual(self.git('branch', '--show-current'), 'vaapi-hardware-encode')
@@ -217,9 +238,9 @@ if args[0]=='build':
         patches = self.export()
         self.assertEqual(len((patches / 'series').read_text().splitlines()), 2)
         upstream = self.advance()
-        self.git('fetch', 'origin')
+        self.git('fetch', 'upstream')
         self.git('switch', 'main')
-        self.git('merge', '--ff-only', 'origin/main')
+        self.git('merge', '--ff-only', 'upstream/main')
         self.run_cmd([str(SOURCE / 'scripts/apply-vaapi-patch.sh'), str(patches), 'portable'])
         self.assertEqual(self.git('rev-parse', 'main'), upstream)
         self.assertEqual((self.repo / 'feature.txt').read_text(), 'local VAAPI\n')
@@ -229,7 +250,7 @@ if args[0]=='build':
     def test_detached_and_wrong_repository(self):
         self.git('switch', '--detach')
         self.assertIn('Detached HEAD', self.update(ok=False))
-        self.assertIn('FilmCraft repository', self.run_cmd([str(SOURCE / 'update-filmcraft-vaapi.sh'), '--dry-run'], cwd=self.home/'origin.git', ok=False))
+        self.assertIn('FilmCraft repository', self.run_cmd([str(SOURCE / 'update-filmcraft-vaapi.sh'), '--dry-run'], cwd=self.home/'upstream.git', ok=False))
 
 
 if __name__ == '__main__':
