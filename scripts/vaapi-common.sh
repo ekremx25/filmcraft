@@ -78,6 +78,12 @@ print(paths[-1])
         false
     fi
     release=PASS
+    step='AppImage packaging'
+    if [[ $(uname -s) == Linux && $(uname -m) == x86_64 ]]; then
+        "$root/scripts/build-appimage.sh" --binary "$binary"
+    else
+        echo 'AppImage packaging: SKIPPED (requires Linux x86_64)'
+    fi
     trap - ERR
     printf '\nFilmCraft upstream update: %s\nUpstream revision: %s\nVAAPI patch: APPLIED\ncargo fmt: %s\ncargo check: %s\ncargo test: %s\nrelease build: %s\nbinary: %s\n' "${update_result:-NOT REQUESTED (validation only)}" "$(git rev-parse main 2>/dev/null || git rev-parse HEAD)" "$fmt" "$check" "$tests" "$release" "$binary"
 }

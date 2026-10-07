@@ -43,6 +43,9 @@ class Workflow(unittest.TestCase):
         for name in ['update-filmcraft-vaapi.sh', 'scripts/vaapi-common.sh',
                      'scripts/export-vaapi-patch.sh', 'scripts/apply-vaapi-patch.sh']:
             shutil.copy2(SOURCE / name, self.repo / name)
+        packager = self.repo / 'scripts/build-appimage.sh'
+        packager.write_text('#!/usr/bin/env bash\necho "appimage $*" >> "$CARGO_TEST_LOG"\n[[ ${FAIL_CARGO:-} != appimage ]]\n')
+        packager.chmod(0o755)
         (self.repo / 'feature.txt').write_text('local VAAPI\n')
         self.git('add', '.')
         self.git('commit', '-m', 'VAAPI implementation and workflow fixture')
@@ -107,7 +110,7 @@ if args[0]=='build':
         self.assertEqual(self.git('config', 'rerere.enabled'), 'true')
         commands = (self.home / 'cargo.log').read_text()
         for cmd in ['fmt --check', 'check --workspace', 'clippy --workspace', 'test --workspace',
-                    'xtask layers', 'xtask assets', 'xtask wasm', 'build --release --locked -p filmcraft --bin filmcraft']:
+                    'xtask layers', 'xtask assets', 'xtask wasm', 'build --release --locked -p filmcraft --bin filmcraft', 'appimage --binary']:
             self.assertIn(cmd, commands)
 
     def test_dirty_and_dry_run(self):
@@ -159,6 +162,14 @@ if args[0]=='build':
         self.env['FAIL_CARGO'] = 'test'
         self.assertIn('FAILED (cargo test)', self.update(ok=False))
         self.assertNotIn('build --release', (self.home / 'cargo.log').read_text())
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_packaging_failure_does_not_report_update_success(self):
+        self.advance()
+        self.env['FAIL_CARGO'] = 'appimage'
+        result = self.update(ok=False)
+        self.assertIn('FAILED (AppImage packaging)', result)
+        self.assertNotIn('FilmCraft upstream update: SUCCESS', result)
         self.assertEqual(self.git('status', '--porcelain'), '')
 
     def export(self):
